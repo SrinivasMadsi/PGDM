@@ -1,0 +1,324 @@
+-- Data  Ingestion and Processing - Case Study
+
+-- Adding jar file
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+
+-- Creating new database 
+create database medsi_srinivas;
+
+-- Using newly created database
+use medsi_srinivas;
+
+-- Creating table for nyc_taxi_data
+-- CREATE EXTERNAL TABLE 
+create external table if not exists yellow_trip_data(vendorid int, tpep_pickup_datetime string,
+tpep_dropoff_datetime string, passenger_count int, trip_distance double, RatecodeID int, store_and_fwd_flag string,
+PULocationID int, DOLocationID int, payment_type int, fare_amount double, 
+extra double, mta_tax double, tip_amount double, 
+tolls_amount double, improvement_surcharge double, total_amount double  
+) 
+row format delimited fields terminated by ','
+location '/common_folder/nyc_taxi_data/'
+tblproperties ("skip.header.line.count"="1");
+
+-- Validating the table creation with data and datatypes
+select * from yellow_trip_data;
+
+--/*-------------------------------------------------------------------------------------------------------------------------*\
+-- Basic Data Quality Checks
+--1.How many records has each TPEP provider provided? Write a query that summarises the number of records of each provider.
+
+select vendorid,count(*) from yellow_trip_data group by vendorid;
+--Result: So,1= Creative Mobile Technologies, LLC has provided 527386 and 2= VeriFone Inc. has provided 647183 records
+
+--2.The data provided is for months November and December only. Check whether the data is consistent, and if not, identify the data quality issues. Mention all data quality issues in comments.
+
+-- Analysis using tpep_pickup_datetime column
+-- Checking the records based on years using tpep_pickup_datetime column
+select from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')  as pickup_yr,count(*)
+from yellow_trip_data group by from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy');
+--Results: As per the problem statement only 2017 should be there but in the results we could see that there are 1 record for 2003,2 records for 2008,1 record for 2009 and 4 records for 2018 years data as well.
+
+--checking months from 2017 year using tpep_pickup_datetime column 
+select from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'MM')  as pickup_mth,count(*)
+from yellow_trip_data
+where from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')=2017
+group by from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'MM');
+
+--Results: As per the problem statement the data should have only November and December data only but in the results we could see that there are 6 records for  october month.
+
+--Analysis using tpep_dropoff_datetime column
+-- Checking the records based on years using tpep_dropoff_datetime column
+select from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')  as dropoff_yr,count(*)
+from yellow_trip_data group by from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy');
+--Results: As per the problem statement only 2017 should be there but in the results we could see that there are 1 record for 2003,1 records for 2008,2 record for 2009, 110 records for 2018 years and 1 record for 2019 data as well.
+-- compare to the results of pickup and dropoff, in  dropoff we have more records in 2018 which means more trips started on the date of dec 31st so the got ended in 2018 jan.
+
+--checking months from 2017 and 2018 year using tpep_dropoff_datetime column 
+select from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy') as yr, from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'MM')  as dropoff_mth,count(*)
+from yellow_trip_data
+--where from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')=2017 and from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')=2018
+group by from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'MM'),from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy');
+
+--Results: from the output dropoff column has 2 records for october column for the year 2017 and there are 110 records for january month for the year 2018 
+
+-- Checking the count of null values for pickup and dropoff
+
+select (count(*)-count(from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy'))) as tot_null from yellow_trip_data
+where from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')=2017
+
+select (count(*)-count(from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy'))) as tot_null from yellow_trip_data
+where from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')=2017
+--Results: There are no null values for pickup 2017 year, there are no null values for dropoff 2017 and 2018 year.
+
+--3.You might have encountered unusual or erroneous rows in the dataset. Can you conclude which vendor is doing a bad job in providing the records using different columns of the dataset? Summarise your conclusions based on every column where these errors are present. For example,  There are unusual passenger count, i.e. 0 which is unusual.
+
+-- Finding the pickup time> dropoff time records
+--Extracting records for 2017 and 2018 years
+select count(*),vendorid  from
+(select *,from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')  as pickup_yr,
+from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')  as dropoff_yr
+from yellow_trip_data) as a
+where pickup_yr=2017 and dropoff_yr in( 2017,2018) and unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss')>unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss')
+group by vendorid
+
+--Results: for vendor 1 there are 73 records having pickup time > dropoff time which is wrong
+
+-- Finding the range of minimum and maximum passengers count value for both the vendors
+select vendorid,min(passenger_count),max(passenger_count) from yellow_trip_data
+group by vendorid
+-- Results: For vendor 1, min count=0 and max count=7; For vendor 2, min count of passengers=0 and maximum count = 9
+
+-- Finding the range of minimum and maximum trip_distance value for both the vendors
+select vendorid,min(trip_distance),max(trip_distance) from yellow_trip_data
+group by vendorid
+-- Results: For vendor 1, minimum trip distance is 0 miles and maximum trip distance is 102.4 miles; for vendor 2, minimum trip distance is 0 and maximum distance is 126.41
+
+--Finding count of  different ratecodeid for both vendors
+select vendorid,ratecodeid,count(*) from yellow_trip_data group by vendorid,ratecodeid order by vendorid,ratecodeid
+--Result: Both vendors has top priority for choosing standard rates. Both vendors has ratecodeid =99 which is not mentioned in data dictionary
+-- vendor2 has more negotiated fare ratecodeid records than vendor1 
+
+--Finding the count of store_and_fwd_flag
+select vendorid,store_and_fwd_flag,count(store_and_fwd_flag) from yellow_trip_data group by vendorid,store_and_fwd_flag
+--Results: Vendor1 has both Y and N flag's but vendor2 has only N flag which means all the  vendor2 trips was not a store and forward trip
+
+
+--Finding count of same pulocationid,dolocationid  for both vendors
+select vendorid,count(*) from yellow_trip_data where pulocationid=dolocationid group by vendorid
+-- Results: for vendor1 there are 42,275 records which has same pulocationid and dolocationid. where as for vendor2 there are 40,419 records
+
+
+--Finding payment type for both vendors
+select vendorid,payment_type,count(*) from yellow_trip_data group by vendorid,payment_type order by vendorid,payment_type
+--Results: for vendor1 353034 records belongs to creditcard,166970 records belongs to cash,5861 records belogns to no charge,1521 records has dispute
+--Results: for vendor2 437222 records belongs to creditcard,209404 records belongs to cash,413 records belogns to no charge,144 records has dispute
+-- From above two vendors here vendor1 has more no charge records and more number of dispute
+
+--Finding the stats of fare_amount of both vendors
+select vendorid,min(fare_amount),max(fare_amount) from yellow_trip_data group by vendorid
+--Result: for vendor 1 min value for fare_amount is 0 and max value is 650 where as for vendor 2 min value is -200 and max value is 488.5
+-- Here vendor2 has un realistic negative values for the trip
+
+--Finding the stats of extra column for both vendors
+select vendorid,min(extra),max(extra) from yellow_trip_data group by vendorid
+--Results: AS per the data description extra column should be in the range of 0.50 and 1$ but here for both vendors it is beyond. for vendor1 min value is -10.6 and max value is 4.5 and for vendor2 minvalue is -4.5 and max value is 4.8 
+
+
+--Finding the stats of mta_tax column for both vendors
+select vendorid,min(mta_tax),max(mta_tax) from yellow_trip_data group by vendorid
+--Results: for vendor1 min mta tax value is 0 and max value is 11.4, for vendor2 min value is -0.5 and max value is 3
+-- As per the data dictionary the possible value are 0 and 0.5 but here for vendor1 min value is 0 and max value is 11.4, for vendor2 min value is -0.5 and max value is 3 
+
+--Finding the stats of tip_amount for both vendors
+select vendorid,min(tip_amount),max(tip_amount) from yellow_trip_data group by vendorid
+--Results: for vendor1 minvalue is 0 and max value is 265 which is making sense but for vendor2 min value is -1.16 and max value is 450, here minimum value is not correct.
+
+--Finding the stats of tolls_amount for both vendors
+select vendorid,min(tolls_amount),max(tolls_amount) from yellow_trip_data group by vendorid
+--Results: for vendor1 min value is 0 and max value is 895.89 which is reasonable, for vendor2 min value is -5.76 which is not correct and max value is 90
+
+--Finding the stats of improvement_surcharge for both vendors
+select vendorid,min(improvement_surcharge),max(improvement_surcharge) from yellow_trip_data group by vendorid
+--Results: for vendor1 min value is 0 and max value is 0.3, for vendor2 min value is -0.3 and max value is 1
+
+--Finding stats of total_amount column for both vendors
+select vendorid,min(total_amount),max(total_amount) from yellow_trip_data group by vendorid
+--Results: for vendor 1 min value is 0 and max value is 928.19, for vendor2 min value is -200.8 and max value is  490.3
+
+--Summary of the results:
+--from the above results vendor2 is doing bad job due to 
+--i) negative values for the trip_fare
+--ii)more negotiated fare ratecode id
+--iii)all the vendor2 trips was not a store and forward trip
+--iv)minimum mta_tax value is negative for vendor2
+--v)minimum tip_amount is also negative for vendor2 which is not correct
+--vi)minimum tolls_amount is also negative for vendor2 which is not correct
+--vii)minimum value of improvement surcharge is also negative for vendor2
+--viii)there are negative values in total_amount column as well for vendor2
+-- Considering above all the factors vendor2 is doing bad job.
+---/*-------------------------------------------------------------------------------------------------------------------*/------
+--Assumptions from the dataset:
+--i)minimum passengers count is 0 for both vendors which seems to be a valid scenario when the customer cancels the trip. So when the passenger count is zero then we need to scrutinize other columns like fare_amount,total_amount,etc... to identify the good records.
+--ii)minimum trip distance is 0 for both vendors which is also seems to be a valid scenario when the customer cancells it. At the same time we need to compare this with other fiels
+--iii)There are records where fare_amount is negative but there is a customer count for them. It means those trips are not charged which incur loss to them.
+--iv)There are few records where pickup time is greater than dropoff time which is not correct and we need to remove them
+
+--Removing errorneous records based on my above assumptions
+
+--Extracting records for 2017 and 2018 years
+
+--Creating partitioned table
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+-- First drop the table 
+drop table yellow_trip_partitioned;
+
+---- creating external partitioned table 
+create external table if not exists yellow_trip_partitioned
+(vendorid int, tpep_pickup_datetime string, tpep_dropoff_datetime string, passenger_count int, trip_distance double,
+ratecodeid string, store_and_fwd_flag string, pulocationid int,dolocationid int,payment_type string,fare_amount double,
+extra double,mta_tax double,tip_amount double,tolls_amount double,improvement_surcharge double,total_amount double,dropoff_yr int,dropoff_month int)
+partitioned by (pickup_yr int, pickup_month int)
+location '/user/hive/warehouse/medsi_srinivas';
+
+-- Inserting the data in to the partitioned table 
+insert overwrite table yellow_trip_partitioned partition(pickup_yr, pickup_month)
+select *  from
+(select *,from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')  as pickup_yr,
+from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy')  as dropoff_yr,
+from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'MM') as pickup_month,
+from_unixtime(unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss'),'MM') as dropoff_month
+from yellow_trip_data) as a
+where pickup_yr=2017 and pickup_month in (11,12) and dropoff_month in (1,11,12) and dropoff_yr in (2017,2018)
+
+
+-- creating ORC table 
+create external table if not exists yellow_trip_partitioned_orc
+(vendorid int, tpep_pickup_datetime string, tpep_dropoff_datetime string, passenger_count int, trip_distance double,
+ratecodeid string, store_and_fwd_flag string, pulocationid int,dolocationid int,payment_type string,fare_amount double,
+extra double,mta_tax double,tip_amount double,tolls_amount double,improvement_surcharge double,total_amount double,dropoff_yr int,dropoff_month int)
+partitioned by (pickup_yr int, pickup_month int)
+stored as orc location '/user/hive/warehouse/medsi_srinivas'
+tblproperties ("orc.compress"="SNAPPY");
+
+--Inserting data into the orc table
+insert overwrite table yellow_trip_partitioned_orc partition(pickup_yr , pickup_month)
+select * from yellow_trip_partitioned 
+where 
+unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss')<=unix_timestamp(tpep_dropoff_datetime,'yyyy-MM-dd HH:mm:ss')
+and (trip_distance=0 and total_amount =0 ) or (trip_distance >0 and total_amount >0)
+and ratecodeid !=99 --removing ratecodeid 99 values as it is not mentioned in the data dictionary
+and (passenger_count >0 and passenger_count<=7 and total_amount >0) --taking >0 passenger count since pssenger_count=0 has total_amount>0 
+and extra >= 0.5 --extra hours include 0.5,1 and overnight charges. So it can be >=0.5
+and mta_tax =0 or mta_tax=0.5 -- as per the data dictionary mta_max should be 0 or 0.5
+and tip_amount>=0 -- tip amount should be 0 or greater than 0 and not negative
+and tolls_amount >=0 --tolls amount also >=0 always
+and improvement_surcharge >=0 -- improvement surchase also >=0 only not negative
+and total_amount >=0 -- always total amount is 0 or >0 but not negative
+
+---/*---------------------------------------------------------------------------------------------------------------------*/----
+--Analysis-I
+
+--1.Compare the overall average fare per trip for November and December.
+select pickup_month,avg(fare_amount) from yellow_trip_partitioned_orc
+group by pickup_month
+--Results: average fare for november = 12.9277 and december = 12.7259
+--2.Explore the ‘number of passengers per trip’ - how many trips are made by each level of ‘Passenger_count’? Do most people travel solo or with other people?
+select passenger_count,count(*) from yellow_trip_partitioned_orc group by passenger_count
+--Results: 
+--passengers count, records count
+--1	           823986
+--2	           175939
+--3	           50476
+--4	           24816
+--5	           54409
+--6	           33054
+--7	           7
+
+-- From the above results 823986 records belongs to solo travelled people. So most of the people are travelled solo only.
+
+--3.Which is the most preferred mode of payment?
+
+select payment_type,count(*) from yellow_trip_partitioned_orc group by payment_type
+--Results:
+--1= Credit card = 786984
+--2= Cash = 375399
+--3= No charge = 5610
+--4= Dispute = 1474
+--So from the above results 786984 belongs to credit card. So credit card is the most preferred payment_type
+
+--4.What is the average tip paid per trip? Compare the average tip with the 25th, 50th and 75th percentiles and comment whether the ‘average tip’ is a representative statistic (of the central tendency) of ‘tip amount paid’. Hint: You may use percentile_approx(DOUBLE col, p): Returns an approximate pth percentile of a numeric column (including floating point types) in the group.
+
+select  avg(tip_amount),percentile_approx(tip_amount,0.25),percentile_approx(tip_amount,0.50),percentile_approx(tip_amount,0.75)
+from yellow_trip_partitioned_orc
+--Results: average value = 1.830, 25th percentile value is 0,50th percentile =1.35 and 75th percentile = 2.448
+--So average value is near to the 50th percentile  but not same. So average is not the representative of central tendency.
+
+--5.Explore the ‘Extra’ (charge) variable - what fraction of total trips have an extra charge is levied?
+select count(*) from yellow_trip_partitioned_orc --total count of records 1169467
+select count(*) from yellow_trip_partitioned_orc where extra>0 --542289 trips has extra charge levied
+--So the fraction of total trips having extra charge is 542289/1169467 = 0.463
+
+-----/*-----------------------------------------------------------------------------------------------------------------*/-----    
+--Analysis_II:
+--1.What is the correlation between the number of passengers on any given trip, and the tip paid per trip? Do multiple travellers tip more compared to solo travellers? Hint: Use CORR(Col_1, Col_2)
+select corr(passenger_count,tip_amount) from yellow_trip_partitioned_orc
+--Result: the correlation value between number of passengers on any given trip is -0.0034. It is negatively correlated. So when Passengers count increases then tip amount decreases.
+
+--2.Segregate the data into five segments of ‘tip paid’: [0-5), [5-10), [10-15) , [15-20) and >=20. Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+
+select count(*) as total from yellow_trip_partitioned_orc -- total count 1169467
+
+select tip_buckets,count(*) as total,(count(*)*100/1169467) as percentage
+from 
+(select case when tip_amount >=0 and tip_amount <=5 then '[0-5]'
+when tip_amount >5 and tip_amount <=10 then '[5-10]'
+when tip_amount >10 and tip_amount <=15 then '[10-15]'
+when tip_amount >15 and tip_amount <=20 then '[15-20]'
+else '[>20]' end as tip_buckets from yellow_trip_partitioned_orc
+) as a  group by tip_buckets
+
+--Results: 
+--tip_buckets	total	percentage
+--[0-5]	      1087825	   93.0188709899467
+--[10-15]     19092	       1.6325385838163882
+--[15-20]	  1951	       0.16682813623642223
+--[5-10]	  59994	       5.130029321049674
+--[>20]	      605          0.051732968950812634
+
+--3.Which month has a greater average ‘speed’ - November or December? Note that the variable ‘speed’ will have to be derived from other metrics. Hint: You have columns for distance and time.
+
+select avg(speed),pickup_month from
+(select pickup_month,(trip_distance/diff) as speed --speed = distance/time
+from
+(select tpep_pickup_datetime,tpep_dropoff_datetime,pickup_month,trip_distance,(unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600 as diff
+from yellow_trip_partitioned_orc
+where pickup_month in (11,12)) as a) as b group by pickup_month
+--Result: for November - average speed =10.90 miles/hour,december average speed = 11.000miles/hour. So finally december has greater average speed.
+
+--4.Analyse the average speed of the most happening days of the year, i.e. 31st December (New year’s eve) and 25th December (Christmas) and compare it with the overall average.
+
+-- calculating Average speed of christmas and newyear
+select avg((trip_distance/diff))as speed,event
+from
+(select tpep_pickup_datetime as christmas,tpep_dropoff_datetime,pickup_month,trip_distance,(unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600 as diff,
+case when from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy-MM-dd')='2017-12-25' then 'christmas' else 'newyear' end as event
+from yellow_trip_partitioned_orc
+where from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy-MM-dd')='2017-12-25'
+or from_unixtime(unix_timestamp(tpep_pickup_datetime,'yyyy-MM-dd HH:mm:ss'),'yyyy-MM-dd')='2017-12-31') as a
+group by event
+-- average speed of christmas is 15.02miles/hour and average speed of newyear is 13.19 miles/hour
+
+--calculating the average of november and december months
+select avg(overall_avg_speed) as overall_speed from
+(select avg(trip_distance/diff) as overall_avg_speed,pickup_month from
+(select pickup_month,trip_distance,(unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime))/3600 as diff
+from yellow_trip_partitioned_orc where pickup_month in (11,12)) as a 
+group by pickup_month) as b
+
+--average speed of november is 10.909 miles/hour and average speed of december is 11.00 miles/hour
+-- overall average speed of november and december month is 10.95 miles/hour
+
+--Comparing to the average speed of most happening days of the year christmas,newyear versus overall average of november and december the speed is greater on christmas and new year days than the  entire month
